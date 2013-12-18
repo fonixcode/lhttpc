@@ -36,8 +36,7 @@
 %%% Eunit setup stuff
 
 start_app() ->
-    application:start(public_key),
-    ok = application:start(ssl),
+    {ok, _} = application:ensure_all_started(ssl),
     _ = application:load(lhttpc),
     ok = application:set_env(lhttpc, pool_size, 3),
     ok = application:start(lhttpc).

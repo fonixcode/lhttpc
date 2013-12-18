@@ -337,12 +337,12 @@ client_loop(Parent, Socket) ->
             Parent ! {pong, Ref},
             client_loop(Parent, Socket);
         {peek_socket, Ref, To} ->
-            Args = {socket, self(), ?HOST, get_port(), ?SSL},
+            Args = {socket, self(), ?HOST, get_port(), ?SSL, undefined},
             Result = gen_server:call(lhttpc_manager, Args, infinity),
             To ! {result, Ref, Result},
             client_loop(Parent, Socket);
         {connect, Ref} ->
-            Args = {socket, self(), ?HOST, get_port(), ?SSL},
+            Args = {socket, self(), ?HOST, get_port(), ?SSL, undefined},
             NewSocket = case gen_server:call(lhttpc_manager, Args, infinity) of
                 no_socket ->
                     socket_server:connect(get_port());
@@ -353,7 +353,7 @@ client_loop(Parent, Socket) ->
             client_loop(Parent, NewSocket);
         {return_socket, Ref} ->
             gen_tcp:controlling_process(Socket, whereis(lhttpc_manager)),
-            ok = gen_server:call(lhttpc_manager, {done, ?HOST, get_port(), ?SSL, Socket}),
+            ok = gen_server:call(lhttpc_manager, {done, ?HOST, get_port(), ?SSL, undefined, Socket}),
             Parent ! {returned, Ref},
             client_loop(Parent, nil)
     end.

@@ -40,13 +40,14 @@
 %% Exported functions
 -export([start_link/0, start_link/1,
          client_count/1,
-         connection_count/1, connection_count/2,
+         connection_count/1, 
+         connection_count/2,
          update_connection_timeout/2,
          dump_settings/1,
          list_pools/0,
          set_max_pool_size/2,
          ensure_call/6,
-         client_done/5
+         client_done/6
         ]).
 
 %% Callbacks
@@ -71,6 +72,8 @@
         max_pool_size = 50 :: non_neg_integer(),
         timeout = 300000 :: non_neg_integer()
     }).
+
+-record(dest, {host, port, ssl, discriminator}).
 
 %%==============================================================================
 %% Exported functions
@@ -132,6 +135,8 @@ client_count(PidOrName) ->
 connection_count(PidOrName) ->
     gen_server:call(PidOrName, connection_count).
 
+
+
 %%------------------------------------------------------------------------------
 %% @spec (PoolPidOrName, Destination) -> Count
 %%    PoolPidOrName = pid() | atom()
@@ -144,9 +149,11 @@ connection_count(PidOrName) ->
 %% `Destination' maintained by the httpc manager.
 %% @end
 %%------------------------------------------------------------------------------
--spec connection_count(pool_id(), destination()) -> non_neg_integer().
+-spec connection_count(pool_id(), destination() | term()) -> non_neg_integer().
 connection_count(PidOrName, {Host, Port, Ssl}) ->
-    Destination = {string:to_lower(Host), Port, Ssl},
+    connection_count(PidOrName, {Host, Port, Ssl, undefined});
+connection_count(PidOrName, {Host, Port, Ssl, Discriminator}) ->
+    Destination = #dest{host = string:to_lower(Host), port = Port, ssl = Ssl, discriminator = Discriminator},
     gen_server:call(PidOrName, {connection_count, Destination}).
 
 %%------------------------------------------------------------------------------
@@ -197,7 +204,9 @@ start_link(Options0) ->
 -spec ensure_call(pool_id(), pid(), host(), port_num(), boolean(), options()) ->
                         socket() | 'no_socket'.
 ensure_call(Pool, Pid, Host, Port, Ssl, Options) ->
-    SocketRequest = {socket, Pid, Host, Port, Ssl},
+    Discriminator = proplists:get_value(discriminator, Options),
+
+    SocketRequest = {socket, Pid, Host, Port, Ssl, Discriminator},
     try gen_server:call(Pool, SocketRequest, infinity) of
         {ok, S} ->
             %% Re-using HTTP/1.1 connections
@@ -239,11 +248,11 @@ ensure_call(Pool, Pid, Host, Port, Ssl, Options) ->
 %% which can be new or not.
 %% @end
 %%------------------------------------------------------------------------------
--spec client_done(pid(), host(), port_num(), boolean(), socket()) -> ok.
-client_done(Pool, Host, Port, Ssl, Socket) ->
+-spec client_done(pid(), host(), port_num(), boolean(), term(), socket()) -> ok.
+client_done(Pool, Host, Port, Ssl, Discriminator, Socket) ->
     case lhttpc_sock:controlling_process(Socket, Pool, Ssl) of
         ok ->
-            DoneMsg = {done, Host, Port, Ssl, Socket},
+            DoneMsg = {done, Host, Port, Ssl, Discriminator, Socket},
             ok = gen_server:call(Pool, DoneMsg, infinity);
         _ ->
             ok
@@ -276,13 +285,13 @@ init(Options) ->
 %%------------------------------------------------------------------------------
 -spec handle_call(any(), any(), #httpc_man{}) ->
     {reply, any(), #httpc_man{}}.
-handle_call({socket, Pid, Host, Port, Ssl}, {Pid, _Ref} = From, State) ->
+handle_call({socket, Pid, Host, Port, Ssl, Discriminator}, {Pid, _Ref} = From, State) ->
     #httpc_man{
         max_pool_size = MaxSize,
         clients = Clients,
         queues = Queues
     } = State,
-    Dest = {Host, Port, Ssl},
+    Dest = #dest{host = Host, port = Port, ssl = Ssl, discriminator = Discriminator},
     {Reply0, State2} = find_socket(Dest, Pid, State),
     case Reply0 of
         {ok, _Socket} ->
@@ -309,9 +318,9 @@ handle_call({connection_count, Destination}, _, State) ->
         error         -> 0
     end,
     {reply, Count, State};
-handle_call({done, Host, Port, Ssl, Socket}, {Pid, _} = From, State) ->
+handle_call({done, Host, Port, Ssl, Discriminator, Socket}, {Pid, _} = From, State) ->
+    Dest = #dest{host = Host, port = Port, ssl = Ssl, discriminator = Discriminator},
     gen_server:reply(From, ok),
-    Dest = {Host, Port, Ssl},
     {Dest, MonRef} = dict:fetch(Pid, State#httpc_man.clients),
     true = erlang:demonitor(MonRef, [flush]),
     Clients2 = dict:erase(Pid, State#httpc_man.clients),
@@ -384,7 +393,7 @@ code_change(_, State, _) ->
 %------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-find_socket({_, _, Ssl} = Dest, Pid, State) ->
+find_socket(#dest{ssl = Ssl} = Dest, Pid, State) ->
     Dests = State#httpc_man.destinations,
     case dict:find(Dest, Dests) of
         {ok, [Socket | Sockets]} ->
@@ -414,7 +423,7 @@ find_socket({_, _, Ssl} = Dest, Pid, State) ->
 remove_socket(Socket, State) ->
     Dests = State#httpc_man.destinations,
     case dict:find(Socket, State#httpc_man.sockets) of
-        {ok, {{_, _, Ssl} = Dest, Timer}} ->
+        {ok, {#dest{ssl = Ssl} = Dest, Timer}} ->
             cancel_timer(Timer, Socket),
             lhttpc_sock:close(Socket, Ssl),
             Sockets = lists:delete(Socket, dict:fetch(Dest, Dests)),
@@ -429,7 +438,7 @@ remove_socket(Socket, State) ->
 %------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-store_socket({_, _, Ssl} = Dest, Socket, State) ->
+store_socket(#dest{ssl = Ssl} = Dest, Socket, State) ->
     Timeout = State#httpc_man.timeout,
     Timer = erlang:send_after(Timeout, self(), {timeout, Socket}),
     % the socket might be closed from the other side
@@ -456,7 +465,7 @@ update_dest(Destination, Sockets, Destinations) ->
 %% @private
 %%------------------------------------------------------------------------------
 close_sockets(Sockets) ->
-    lists:foreach(fun({Socket, {{_, _, Ssl}, Timer}}) ->
+    lists:foreach(fun({Socket, {#dest{ssl = Ssl}, Timer}}) ->
                 lhttpc_sock:close(Socket, Ssl),
                 erlang:cancel_timer(Timer)
         end, dict:to_list(Sockets)).
@@ -478,7 +487,7 @@ cancel_timer(Timer, Socket) ->
 %------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-add_to_queue({_Host, _Port, _Ssl} = Dest, From, Queues) ->
+add_to_queue(#dest{} = Dest, From, Queues) ->
     case dict:find(Dest, Queues) of
         error ->
             dict:store(Dest, queue:in(From, queue:new()), Queues);
@@ -489,7 +498,7 @@ add_to_queue({_Host, _Port, _Ssl} = Dest, From, Queues) ->
 %------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-queue_out({_Host, _Port, _Ssl} = Dest, Queues) ->
+queue_out(#dest{} = Dest, Queues) ->
     case dict:find(Dest, Queues) of
         error ->
             empty;
@@ -507,7 +516,7 @@ queue_out({_Host, _Port, _Ssl} = Dest, Queues) ->
 %------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-deliver_socket(Socket, {_, _, Ssl} = Dest, State) ->
+deliver_socket(Socket, #dest{ssl = Ssl} = Dest, State) ->
     case queue_out(Dest, State#httpc_man.queues) of
         empty ->
             store_socket(Dest, Socket, State);

@@ -178,7 +178,8 @@ execute(From, Host, Port, Ssl, Path, Method, Hdrs, Body, Options) ->
             % * The socket was closed remotely already
             % * Due to an error in this module (returning dead sockets for
             %   instance)
-            ok = lhttpc_manager:client_done(Pool, Host, Port, Ssl, NewSocket),
+            Discriminator = proplists:get_value(discriminator, Options),
+            ok = lhttpc_manager:client_done(Pool, Host, Port, Ssl, Discriminator, NewSocket),
             {ok, R}
     end,
     {response, self(), Response}.

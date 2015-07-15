@@ -112,6 +112,34 @@ request(From, Host, Port, Ssl, Path, Method, Hdrs, Body, Options) ->
 %% Internal functions
 %%==============================================================================
 
+peername(false, Socket) ->
+    {ok, {Addr, _}} = inet:peername(Socket),
+    Addr;
+peername(true, Socket) ->
+    {ok, {Addr, _}} = ssl:peername(Socket),
+    Addr.
+
+filter(Options, SSL, Socket) ->
+    Filter = lists:keyfind(ip_filter, 1, Options),
+    case Filter of
+        false ->
+            true;
+        {ip_filter, F} ->
+            Addr = peername(SSL, Socket),
+            F(Addr)
+    end.
+
+filter_socket(_Options, undefined, _Pool, _Host, _Port, _Ssl, _Discriminator) ->
+    undefined;
+filter_socket(Options, Socket, Pool, Host, Port, Ssl, Discriminator) ->
+    case filter(Options, Ssl, Socket) of
+        true ->
+            Socket;
+        false ->
+            ok = lhttpc_manager:client_done(Pool, Host, Port, Ssl, Discriminator, Socket),
+            undefined
+    end.
+
 %%------------------------------------------------------------------------------
 %% @doc This function fills in the Client record used in the requests and obtains
 %% the socket from an existing pool or creates a new pool if needed. If the
@@ -140,7 +168,9 @@ execute(From, Host, Port, Ssl, Path, Method, Hdrs, Body, Options) ->
     Pool = proplists:get_value(pool, Options, whereis(lhttpc_manager)),
     %% Get a socket for the pool or exit
     %Socket = lhttpc_manager:ensure_call(Pool, SocketRequest, Options),
-    Socket = lhttpc_manager:ensure_call(Pool, self(), Host, Port, Ssl, Options),
+    Discriminator = proplists:get_value(discriminator, Options),
+    ConnectOptions = proplists:get_value(connect_options, Options, []),
+    Socket = filter_socket(ConnectOptions, lhttpc_manager:ensure_call(Pool, self(), Host, Port, Ssl, Options), Pool, Host, Port, Ssl, Discriminator),
     State = #client_state{
         host = Host,
         port = Port,
@@ -152,7 +182,7 @@ execute(From, Host, Port, Ssl, Path, Method, Hdrs, Body, Options) ->
         socket = Socket,
         connect_timeout = proplists:get_value(connect_timeout, Options,
             infinity),
-        connect_options = proplists:get_value(connect_options, Options, []),
+        connect_options = ConnectOptions,
         attempts = 1 + proplists:get_value(send_retry, Options, 1),
         partial_upload = PartialUpload,
         upload_window = UploadWindowSize,
@@ -178,11 +208,12 @@ execute(From, Host, Port, Ssl, Path, Method, Hdrs, Body, Options) ->
             % * The socket was closed remotely already
             % * Due to an error in this module (returning dead sockets for
             %   instance)
-            Discriminator = proplists:get_value(discriminator, Options),
             ok = lhttpc_manager:client_done(Pool, Host, Port, Ssl, Discriminator, NewSocket),
             {ok, R}
     end,
     {response, self(), Response}.
+
+
 
 %%------------------------------------------------------------------------------
 %% @private

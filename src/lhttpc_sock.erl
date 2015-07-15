@@ -65,9 +65,10 @@
 -spec connect(host(), integer(), socket_options(), timeout(), boolean()) ->
     {ok, socket()} | {error, atom()}.
 connect(Host, Port, Options, Timeout, true) ->
-    ssl:connect(Host, Port, Options, Timeout);
+    
+    ssl:connect(Host, Port, Options ++ [{cb_info, {lhttpc_filtered_sock, tcp, tcp_closed, tcp_error}}], Timeout);
 connect(Host, Port, Options, Timeout, false) ->
-    gen_tcp:connect(Host, Port, Options, Timeout).
+    lhttpc_filtered_sock:connect(Host, Port, Options, Timeout).
 
 %%------------------------------------------------------------------------------
 %% @spec (Socket, SslFlag) -> {ok, Data} | {error, Reason}

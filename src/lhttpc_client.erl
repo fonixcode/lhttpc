@@ -478,7 +478,7 @@ read_response(State, Vsn, {StatusCode, _} = Status, Hdrs) ->
             Response = handle_response_body(State, Vsn, Status, Hdrs),
             NewHdrs = element(2, Response),
             ReqHdrs = State#client_state.request_headers,
-            NewSocket = maybe_close_socket(Socket, Ssl, Vsn, ReqHdrs, NewHdrs),
+            NewSocket = maybe_close_socket(Socket, StatusCode, Ssl, Vsn, ReqHdrs, NewHdrs),
             {Response, NewSocket};
         {error, closed} ->
             % Either we only noticed that the socket was closed after we
@@ -916,24 +916,30 @@ read_until_closed(Socket, Acc, Hdrs, Ssl) ->
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-maybe_close_socket(Socket, Ssl, {1, Minor}, ReqHdrs, RespHdrs) when Minor >= 1->
+maybe_close_socket(Socket, StatusCode, Ssl, {1, Minor}, ReqHdrs, RespHdrs) when Minor >= 1->
     ClientConnection = ?CONNECTION_HDR(ReqHdrs, "keep-alive"),
     ServerConnection = ?CONNECTION_HDR(RespHdrs, "keep-alive"),
     if
         ClientConnection =:= "close"; ServerConnection =:= "close" ->
             lhttpc_sock:close(Socket, Ssl),
             undefined;
-        ClientConnection =/= "close", ServerConnection =/= "close" ->
+        StatusCode =:= 404 ->
+            lhttpc_sock:close(Socket, Ssl),
+            undefined;
+        true ->
             Socket
     end;
-maybe_close_socket(Socket, Ssl, _, ReqHdrs, RespHdrs) ->
+maybe_close_socket(Socket, StatusCode, Ssl, _, ReqHdrs, RespHdrs) ->
     ClientConnection = ?CONNECTION_HDR(ReqHdrs, "keep-alive"),
     ServerConnection = ?CONNECTION_HDR(RespHdrs, "close"),
     if
         ClientConnection =:= "close"; ServerConnection =/= "keep-alive" ->
             lhttpc_sock:close(Socket, Ssl),
             undefined;
-        ClientConnection =/= "close", ServerConnection =:= "keep-alive" ->
+        StatusCode =:= 404 ->
+            lhttpc_sock:close(Socket, Ssl),
+            undefined;
+        true ->
             Socket
     end.
 
